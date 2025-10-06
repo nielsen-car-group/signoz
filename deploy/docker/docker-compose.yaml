@@ -3,6 +3,7 @@ version: "3"
 x-common: &common
   networks:
     - signoz-net
+    - dokploy-network        # <-- allow Dokploy's router to reach services
   restart: unless-stopped
   logging:
     options:
@@ -23,20 +24,13 @@ x-clickhouse-defaults: &clickhouse-defaults
     zookeeper-1:
       condition: service_healthy
   healthcheck:
-    test:
-      - CMD
-      - wget
-      - --spider
-      - -q
-      - 0.0.0.0:8123/ping
+    test: [ "CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping" ]
     interval: 30s
     timeout: 5s
     retries: 3
   ulimits:
     nproc: 65535
-    nofile:
-      soft: 262144
-      hard: 262144
+    nofile: { soft: 262144, hard: 262144 }
   environment:
     - CLICKHOUSE_SKIP_USER_SETUP=1
 
@@ -49,9 +43,7 @@ x-zookeeper-defaults: &zookeeper-defaults
     signoz.io/port: "9141"
     signoz.io/path: "/metrics"
   healthcheck:
-    test:
-      - CMD-SHELL
-      - curl -s -m 2 http://localhost:8080/commands/ruok | grep error | grep null
+    test: [ "CMD-SHELL", "curl -s -m 2 http://localhost:8080/commands/ruok | grep error | grep null" ]
     interval: 30s
     timeout: 5s
     retries: 3
@@ -88,10 +80,6 @@ services:
   zookeeper-1:
     !!merge <<: *zookeeper-defaults
     container_name: signoz-zookeeper-1
-    # ports:
-    #   - "2181:2181"
-    #   - "2888:2888"
-    #   - "3888:3888"
     volumes:
       - zookeeper-1:/bitnami/zookeeper
     environment:
@@ -104,10 +92,6 @@ services:
   clickhouse:
     !!merge <<: *clickhouse-defaults
     container_name: signoz-clickhouse
-    # ports:
-    #   - "9000:9000"
-    #   - "8123:8123"
-    #   - "9181:9181"
     volumes:
       - ../common/clickhouse/config.xml:/etc/clickhouse-server/config.xml
       - ../common/clickhouse/users.xml:/etc/clickhouse-server/users.xml
@@ -121,35 +105,27 @@ services:
     !!merge <<: *db-depend
     image: signoz/signoz:${VERSION:-v0.96.1}
     container_name: signoz
-    # use env var for Prometheus config instead of deprecated flag
-    command: []
+    command: []                        # use env instead of deprecated --config
     ports:
-      - "8080:8080" # signoz port
-      # With Dokploy Domains you can remove this host port and let Dokploy route internally:
-      # ports: []
+      - "8080:8080"                    # optional when using Dokploy Domains
     volumes:
       - ../common/signoz/prometheus.yml:/root/config/prometheus.yml
       - ../common/dashboards:/root/config/dashboards
       - sqlite:/var/lib/signoz/
     environment:
-      - SIGNOZ_JWT_SECRET=${SIGNOZ_JWT_SECRET}                     # <-- consumed from Dokploy Environment
+      - SIGNOZ_JWT_SECRET=${SIGNOZ_JWT_SECRET}
       - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
-      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse                  # replaces deprecated STORAGE
+      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
       - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://clickhouse:9000
       - SIGNOZ_SQLSTORE_SQLITE_PATH=/var/lib/signoz/signoz.db
       - DASHBOARDS_PATH=/root/config/dashboards
       - GODEBUG=netdns=go
-      - SIGNOZ_ANALYTICS_ENABLED=${SIGNOZ_ANALYTICS_ENABLED:-true} # replaces deprecated TELEMETRY_ENABLED
-      - SIGNOZ_PROMETHEUS_CONFIG=/root/config/prometheus.yml       # replaces deprecated --config flag usage
+      - SIGNOZ_ANALYTICS_ENABLED=${SIGNOZ_ANALYTICS_ENABLED:-true}
+      - SIGNOZ_PROMETHEUS_CONFIG=/root/config/prometheus.yml
       - DEPLOYMENT_TYPE=docker-standalone-amd
       - DOT_METRICS_ENABLED=true
     healthcheck:
-      test:
-        - CMD
-        - wget
-        - --spider
-        - -q
-        - localhost:8080/api/v1/health
+      test: [ "CMD", "wget", "--spider", "-q", "localhost:8080/api/v1/health" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -170,9 +146,8 @@ services:
       - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
       - LOW_CARDINAL_EXCEPTION_GROUPING=false
     ports:
-      # - "1777:1777"     # pprof extension
-      - "4317:4317" # OTLP gRPC receiver
-      - "4318:4318" # OTLP HTTP receiver
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
     depends_on:
       signoz:
         condition: service_healthy
@@ -181,28 +156,23 @@ services:
     !!merge <<: *common
     image: signoz/signoz-schema-migrator:${OTELCOL_TAG:-v0.129.6}
     container_name: schema-migrator-sync
-    command:
-      - sync
-      - --dsn=tcp://clickhouse:9000
-      - --up=
+    command: [ "sync", "--dsn=tcp://clickhouse:9000", "--up=" ]
     depends_on:
-      clickhouse:
-        condition: service_healthy
+      clickhouse: { condition: service_healthy }
     restart: on-failure
 
   schema-migrator-async:
     !!merge <<: *db-depend
     image: signoz/signoz-schema-migrator:${OTELCOL_TAG:-v0.129.6}
     container_name: schema-migrator-async
-    command:
-      - async
-      - --dsn=tcp://clickhouse:9000
-      - --up=
+    command: [ "async", "--dsn=tcp://clickhouse:9000", "--up=" ]
     restart: on-failure
 
 networks:
   signoz-net:
     name: signoz-net
+  dokploy-network:
+    external: true         # <-- required for Dokploy's Domains to connect
 
 volumes:
   clickhouse:
