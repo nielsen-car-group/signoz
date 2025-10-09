@@ -1,0 +1,175 @@
+# docker-compose.yaml
+# Note: no `version:` key (Compose v2+ auto-detects)
+
+services:
+  # ------------------------------------------
+  # ClickHouse bootstrap (histogramQuantile)
+  # ------------------------------------------
+  init-clickhouse:
+    image: clickhouse/clickhouse-server:25.5.6
+    container_name: signoz-init-clickhouse
+    restart: on-failure
+    command:
+      - bash
+      - -c
+      - |
+        version="v0.0.1"
+        node_os=$$(uname -s | tr '[:upper:]' '[:lower:]')
+        node_arch=$$(uname -m | sed s/aarch64/arm64/ | sed s/x86_64/amd64/)
+        echo "Fetching histogram-binary for $${node_os}/$${node_arch}"
+        cd /tmp
+        wget -O histogram-quantile.tar.gz "https://github.com/SigNoz/signoz/releases/download/histogram-quantile%2F$${version}/histogram-quantile_$${node_os}_$${node_arch}.tar.gz"
+        tar -xvzf histogram-quantile.tar.gz
+        mv histogram-quantile /var/lib/clickhouse/user_scripts/histogramQuantile
+    volumes:
+      - ../common/clickhouse/user_scripts:/var/lib/clickhouse/user_scripts/
+
+  # ------------------------------------------
+  # Zookeeper (needed by ClickHouse)
+  # ------------------------------------------
+  zookeeper-1:
+    image: signoz/zookeeper:3.7.1
+    container_name: signoz-zookeeper-1
+    restart: unless-stopped
+    user: root
+    environment:
+      - ZOO_SERVER_ID=1
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - ZOO_AUTOPURGE_INTERVAL=1
+      - ZOO_ENABLE_PROMETHEUS_METRICS=yes
+      - ZOO_PROMETHEUS_METRICS_PORT_NUMBER=9141
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -m 2 http://localhost:8080/commands/ruok | grep error | grep null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - zookeeper-1:/bitnami/zookeeper
+
+  # ------------------------------------------
+  # ClickHouse
+  # ------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.5.6
+    container_name: signoz-clickhouse
+    restart: unless-stopped
+    environment:
+      - CLICKHOUSE_SKIP_USER_SETUP=1
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 262144
+        hard: 262144
+    depends_on:
+      init-clickhouse:
+        condition: service_completed_successfully
+      zookeeper-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ../common/clickhouse/config.xml:/etc/clickhouse-server/config.xml
+      - ../common/clickhouse/users.xml:/etc/clickhouse-server/users.xml
+      - ../common/clickhouse/custom-function.xml:/etc/clickhouse-server/custom-function.xml
+      - ../common/clickhouse/user_scripts:/var/lib/clickhouse/user_scripts/
+      - ../common/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml
+      - clickhouse:/var/lib/clickhouse/
+
+  # ------------------------------------------
+  # Schema migrators (run before SigNoz UI)
+  # ------------------------------------------
+  schema-migrator-sync:
+    image: signoz/signoz-schema-migrator:${OTELCOL_TAG:-v0.129.6}
+    container_name: schema-migrator-sync
+    restart: on-failure
+    command: ["sync", "--dsn=tcp://clickhouse:9000", "--up="]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  schema-migrator-async:
+    image: signoz/signoz-schema-migrator:${OTELCOL_TAG:-v0.129.6}
+    container_name: schema-migrator-async
+    restart: on-failure
+    command: ["async", "--dsn=tcp://clickhouse:9000", "--up="]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      schema-migrator-sync:
+        condition: service_completed_successfully
+
+  # ------------------------------------------
+  # SigNoz UI / backend (Dokploy Domain targets this)
+  # ------------------------------------------
+  signoz:
+    image: signoz/signoz:${VERSION:-v0.96.1}
+    container_name: signoz
+    restart: unless-stopped
+    # No host ports; let Dokploy/Traefik proxy to this exposed port
+    expose:
+      - "8080"
+    environment:
+      - SIGNOZ_JWT_SECRET=${SIGNOZ_JWT_SECRET}
+      - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
+      - SIGNOZ_TELEMETRYSTORE_PROVIDER=clickhouse
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://clickhouse:9000
+      - SIGNOZ_SQLSTORE_SQLITE_PATH=/var/lib/signoz/signoz.db
+      - DASHBOARDS_PATH=/root/config/dashboards
+      - GODEBUG=netdns=go
+      - SIGNOZ_ANALYTICS_ENABLED=${SIGNOZ_ANALYTICS_ENABLED:-true}
+      - SIGNOZ_PROMETHEUS_CONFIG=/root/config/prometheus.yml
+      - DEPLOYMENT_TYPE=docker-standalone-amd
+      - DOT_METRICS_ENABLED=true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      schema-migrator-sync:
+        condition: service_completed_successfully
+    volumes:
+      - ../common/signoz/prometheus.yml:/root/config/prometheus.yml
+      - ../common/dashboards:/root/config/dashboards
+      - sqlite:/var/lib/signoz/
+
+  # ------------------------------------------
+  # OpenTelemetry Collector (managed by OpAMP)
+  # ------------------------------------------
+  otel-collector:
+    image: signoz/signoz-otel-collector:${OTELCOL_TAG:-v0.129.6}
+    container_name: signoz-otel-collector
+    restart: unless-stopped
+    # Keep INTERNAL only; Dokploy/Traefik doesn't proxy OTLP.
+    # If you must ingest from outside this host, swap expose→ports.
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    command:
+      - --config=/etc/otel-collector-config.yaml
+      - --manager-config=/etc/manager-config.yaml
+      - --copy-path=/var/tmp/collector-config.yaml
+      - --feature-gates=-pkg.translator.prometheus.NormalizeName
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
+      - LOW_CARDINAL_EXCEPTION_GROUPING=false
+    depends_on:
+      signoz:
+        condition: service_healthy
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      # IMPORTANT: inside this file, set server_endpoint: ws://signoz:4320/v1/opamp
+      - ../common/signoz/otel-collector-opamp-config.yaml:/etc/manager-config.yaml
+
+volumes:
+  clickhouse:
+    name: signoz-clickhouse
+  sqlite:
+    name: signoz-sqlite
+  zookeeper-1:
+    name: signoz-zookeeper-1
