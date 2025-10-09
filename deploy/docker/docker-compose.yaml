@@ -1,8 +1,8 @@
 version: "3"
 
 x-common: &common
-  #networks:
-  #  - signoz-net
+  networks:
+    - signoz-net
   #  - dokploy-network        # <-- allow Dokploy's router to reach services
   restart: unless-stopped
   logging:
@@ -168,9 +168,9 @@ services:
     command: [ "async", "--dsn=tcp://clickhouse:9000", "--up=" ]
     restart: on-failure
 
-#networks:
-#  signoz-net:
-#    name: signoz-net
+networks:
+  signoz-net:
+    name: signoz-net
 #  dokploy-network:
 #    external: true         # <-- required for Dokploy's Domains to connect
 
