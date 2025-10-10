@@ -22,7 +22,8 @@ services:
         tar -xvzf histogram-quantile.tar.gz
         mv histogram-quantile /var/lib/clickhouse/user_scripts/histogramQuantile
     volumes:
-      - ../common/clickhouse/user_scripts:/var/lib/clickhouse/user_scripts/
+      #- ../common/clickhouse/user_scripts:/var/lib/clickhouse/user_scripts/
+      - clickhouse_user_scripts:/var/lib/clickhouse/user_scripts/
 
   # ------------------------------------------
   # Zookeeper (needed by ClickHouse)
@@ -76,6 +77,9 @@ services:
       - ../common/clickhouse/custom-function.xml:/etc/clickhouse-server/custom-function.xml
       - ../common/clickhouse/user_scripts:/var/lib/clickhouse/user_scripts/
       - ../common/clickhouse/cluster.xml:/etc/clickhouse-server/config.d/cluster.xml
+
+      # use the same named volume for user scripts
+      - clickhouse_user_scripts:/var/lib/clickhouse/user_scripts/
       - clickhouse:/var/lib/clickhouse/
 
   # ------------------------------------------
@@ -169,6 +173,7 @@ services:
 volumes:
   clickhouse:
     name: signoz-clickhouse
+  clickhouse_user_scripts:
   sqlite:
     name: signoz-sqlite
   zookeeper-1:
