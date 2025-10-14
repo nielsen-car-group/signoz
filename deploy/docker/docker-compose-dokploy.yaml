@@ -145,6 +145,7 @@ services:
     restart: unless-stopped
     networks:
       - signoz-net
+      - dokploy-network
     logging:
       options:
         max-size: 50m
