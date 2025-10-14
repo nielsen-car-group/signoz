@@ -1,5 +1,7 @@
 version: "3"
 x-common: &common
+  networks:
+    - signoz-net
   restart: unless-stopped
   logging:
     options:
@@ -117,6 +119,8 @@ services:
       - "8080"
     #   - "8080:8080" # signoz port
     #   - "6060:6060"     # pprof port
+    networks:
+      - dokploy-network
     volumes:
       - ../common/signoz/prometheus.yml:/root/config/prometheus.yml
       - ../common/dashboards:/root/config/dashboards
@@ -185,6 +189,11 @@ services:
       - --dsn=tcp://clickhouse:9000
       - --up=
     restart: on-failure
+networks:
+  signoz-net:
+    name: signoz-net
+  dokploy-network:
+    external: true
 volumes:
   clickhouse:
     name: signoz-clickhouse
