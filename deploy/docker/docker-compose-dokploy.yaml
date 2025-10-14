@@ -1,7 +1,7 @@
 version: "3"
 x-common: &common
-  #networks:
-  #  - signoz-net
+  networks:
+    - signoz-net
   restart: unless-stopped
   logging:
     options:
@@ -115,7 +115,8 @@ services:
     container_name: signoz
     command:
       - --config=/root/config/prometheus.yml
-    #ports:
+    ports:
+      - "8080"
     #   - "8080:8080" # signoz port
     #   - "6060:6060"     # pprof port
     volumes:
@@ -186,9 +187,9 @@ services:
       - --dsn=tcp://clickhouse:9000
       - --up=
     restart: on-failure
-#networks:
-#  signoz-net:
-#    name: signoz-net
+networks:
+  signoz-net:
+    name: signoz-net
 volumes:
   clickhouse:
     name: signoz-clickhouse
